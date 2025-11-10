@@ -1,0 +1,275 @@
+"""
+Main entry point for beam prediction training and evaluation
+"""
+import torch
+import argparse
+import json
+import os
+
+from config import Config, get_default_config, get_lightweight_config
+from data import create_dataloaders, BeamSeqDataset
+from models import BeamPredictorLLM
+from training import Trainer
+from evaluation import Evaluator, create_all_visualizations
+from utils import set_seed
+
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="Beam Prediction with LLMs")
+    
+    # Mode
+    parser.add_argument("--mode", type=str, default="train",
+                        choices=["train", "eval", "both"],
+                        help="Mode: train, eval, or both")
+    
+    # Config
+    parser.add_argument("--config", type=str, default="default",
+                        choices=["default", "lightweight", "highperf"],
+                        help="Configuration preset")
+    
+    # Model
+    parser.add_argument("--use_gpt2", action="store_true",
+                        help="Use GPT-2 backbone")
+    parser.add_argument("--no_gpt2", dest="use_gpt2", action="store_false")
+    parser.set_defaults(use_gpt2=None)
+    
+    # Training
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Batch size")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Learning rate")
+    
+    # Evaluation
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to checkpoint for evaluation")
+    parser.add_argument("--ar_eval", action="store_true",
+                        help="Use autoregressive evaluation")
+    
+    # Data
+    parser.add_argument("--n_train", type=int, default=None,
+                        help="Number of training samples")
+    parser.add_argument("--n_val", type=int, default=None,
+                        help="Number of validation samples")
+    parser.add_argument("--n_test", type=int, default=None,
+                        help="Number of test samples")
+    
+    # Other
+    parser.add_argument("--seed", type=int, default=1337,
+                        help="Random seed")
+    parser.add_argument("--device", type=str, default="auto",
+                        help="Device: auto, cuda, mps, or cpu")
+    parser.add_argument("--no_viz", action="store_true",
+                        help="Disable visualizations")
+    
+    return parser.parse_args()
+
+
+def get_config(args):
+    """Get configuration from args
+    
+    Args:
+        args: parsed arguments
+    
+    Returns:
+        cfg: configuration
+    """
+    # Load base config
+    if args.config == "lightweight":
+        cfg = get_lightweight_config()
+    elif args.config == "highperf":
+        from config import get_highperf_config
+        cfg = get_highperf_config()
+    else:
+        cfg = get_default_config()
+    
+    # Override with command line args
+    if args.use_gpt2 is not None:
+        cfg.use_gpt2 = args.use_gpt2
+    if args.epochs is not None:
+        cfg.n_epochs = args.epochs
+    if args.batch_size is not None:
+        cfg.batch_size = args.batch_size
+    if args.lr is not None:
+        cfg.lr = args.lr
+    if args.n_train is not None:
+        cfg.n_train = args.n_train
+    if args.n_val is not None:
+        cfg.n_val = args.n_val
+    if args.n_test is not None:
+        cfg.n_test = args.n_test
+    
+    cfg.seed = args.seed
+    cfg.device = args.device
+    cfg.save_visualizations = not args.no_viz
+    
+    return cfg
+
+
+def train_model(cfg: Config, device: torch.device):
+    """Train model
+    
+    Args:
+        cfg: configuration
+        device: torch device
+    
+    Returns:
+        model: trained model
+        history: training history
+    """
+    print("\n" + "="*70)
+    print("TRAINING")
+    print("="*70)
+    
+    # Create dataloaders
+    train_loader, val_loader, test_loader = create_dataloaders(cfg)
+    
+    # Create model
+    print("\nInitializing model...")
+    model = BeamPredictorLLM(cfg)
+    print(f"Model created successfully")
+    print(f"Using GPT-2: {cfg.use_gpt2}")
+    
+    # Create trainer
+    trainer = Trainer(model, train_loader, val_loader, cfg, device)
+    
+    # Train
+    best_metrics = trainer.train()
+    
+    # Save config
+    config_path = os.path.join(cfg.checkpoint_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(cfg.to_dict(), f, indent=2)
+    print(f"\nSaved config to {config_path}")
+    
+    return model, trainer.history
+
+
+def evaluate_model(
+    cfg: Config,
+    device: torch.device,
+    model: torch.nn.Module = None,
+    checkpoint_path: str = None
+):
+    """Evaluate model
+    
+    Args:
+        cfg: configuration
+        device: torch device
+        model: trained model (optional)
+        checkpoint_path: path to checkpoint (optional)
+    
+    Returns:
+        test_metrics: test metrics dict
+        test_loader: test dataloader
+    """
+    print("\n" + "="*70)
+    print("EVALUATION")
+    print("="*70)
+    
+    # Create test dataloader
+    test_dataset = BeamSeqDataset(cfg.n_test, cfg, "test", cfg.seed)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=cfg.pin_memory
+    )
+    
+    # Load model if not provided
+    if model is None:
+        print("\nLoading model from checkpoint...")
+        if checkpoint_path is None:
+            checkpoint_path = os.path.join(cfg.checkpoint_dir, "best_model.pt")
+        
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        
+        model = BeamPredictorLLM(cfg)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"Loaded checkpoint from {checkpoint_path}")
+        print(f"  Epoch: {checkpoint['epoch']}")
+        print(f"  Val Loss: {checkpoint['val_loss']:.4f}")
+    
+    # Create evaluator
+    evaluator = Evaluator(model, test_loader, cfg, device)
+    
+    # Evaluate
+    test_metrics = evaluator.evaluate()
+    
+    return test_metrics, test_loader
+
+
+def main():
+    """Main function"""
+    # Parse arguments
+    args = parse_args()
+    
+    # Get configuration
+    cfg = get_config(args)
+    
+    # Set seed
+    set_seed(cfg.seed)
+    
+    # Get device
+    device = cfg.get_device()
+    print(f"\nUsing device: {device}")
+    print(f"Random seed: {cfg.seed}")
+    
+    # Print configuration
+    print("\nConfiguration:")
+    print("-" * 70)
+    for key, value in cfg.to_dict().items():
+        if not key.startswith('_'):
+            print(f"  {key:30s}: {value}")
+    print("-" * 70)
+    
+    # Execute based on mode
+    model = None
+    history = None
+    test_metrics = None
+    test_loader = None
+    
+    if args.mode in ["train", "both"]:
+        model, history = train_model(cfg, device)
+    
+    if args.mode in ["eval", "both"]:
+        test_metrics, test_loader = evaluate_model(
+            cfg,
+            device,
+            model=model,
+            checkpoint_path=args.checkpoint
+        )
+    
+    # Visualizations
+    if cfg.save_visualizations and test_metrics is not None:
+        if model is None:
+            # Load model for visualization
+            checkpoint_path = args.checkpoint or os.path.join(
+                cfg.checkpoint_dir, "best_model.pt"
+            )
+            model = BeamPredictorLLM(cfg)
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+        
+        create_all_visualizations(
+            cfg,
+            history or {},
+            test_metrics,
+            test_loader,
+            model,
+            device,
+            viz_dir="./visualizations"
+        )
+    
+    print("\n" + "="*70)
+    print("DONE")
+    print("="*70)
+
+
+if __name__ == "__main__":
+    main()
