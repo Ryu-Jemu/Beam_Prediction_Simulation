@@ -186,7 +186,7 @@ class Trainer:
         # Logging
         os.makedirs(cfg.log_dir, exist_ok=True)
         self.log_file = os.path.join(cfg.log_dir, "training_log.json")
-        self.history = {
+        self.history: Dict[str, List[Any]] = {
             "train_loss": [],
             "val_loss": [],
             "val_metrics": [],
@@ -194,8 +194,8 @@ class Trainer:
         }
         
         print(f"Model parameters: {count_parameters(model):,}")
-        print(f"Training samples: {len(train_loader.dataset)}")
-        print(f"Validation samples: {len(val_loader.dataset)}")
+        print(f"Training samples: {getattr(train_loader.dataset, '__len__', lambda: 0)()}")
+        print(f"Validation samples: {getattr(val_loader.dataset, '__len__', lambda: 0)()}")
     
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch
@@ -231,7 +231,7 @@ class Trainer:
             stats_text = compute_statistics_text(a_past[0:1])
             
             # Forward pass
-            residual = self.model(X, stats_text)  # [B, H, 2]
+            residual = self.model(X, stats_text=stats_text)  # [B, H, 2]
             
             # Compose with baseline if enabled
             if self.cfg.use_ctrv_baseline:
@@ -318,7 +318,7 @@ class Trainer:
             stats_text = compute_statistics_text(a_past[0:1])
             
             # Forward pass
-            residual = self.model(X, stats_text)
+            residual = self.model(X, stats_text=stats_text)
             
             # Compose with baseline
             if self.cfg.use_ctrv_baseline:
@@ -411,7 +411,7 @@ class Trainer:
             
             # Checkpointing
             if val_metrics is not None and self.cfg.save_best:
-                if val_loss < self.best_val_loss:
+                if val_loss is not None and val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
                     self.best_epoch = epoch
                     self.patience_counter = 0
@@ -452,7 +452,7 @@ class Trainer:
         
         if getattr(self.cfg, "save_visualizations", False):
             try:
-                from evaluation import auto_visualize_from_log
+                from evaluation.visualize import auto_visualize_from_log
                 log_path = os.path.join(self.cfg.log_dir, "training_log.json")
                 out_dir = getattr(self.cfg, "viz_dir", "./visualizations")
                 auto_visualize_from_log(log_path, dict(self.cfg.__dict__), out_dir)

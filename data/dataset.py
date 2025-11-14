@@ -414,27 +414,39 @@ def create_dataloaders(
         'num_workers': 0,  # MUST be 0 for Mac
         'pin_memory': False,  # MUST be False for MPS
         'persistent_workers': False,  # Disabled
-        'prefetch_factor': None if cfg.num_workers == 0 else cfg.prefetch_factor,
     }
+
+    # Only add prefetch_factor when num_workers > 0
+    if cfg.num_workers > 0:
+        loader_kwargs['prefetch_factor'] = cfg.prefetch_factor
     
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
+        batch_size=cfg.batch_size,
         shuffle=True,
         drop_last=True,
-        **loader_kwargs
+        num_workers=cfg.num_workers,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
+        batch_size=cfg.batch_size,
         shuffle=False,
-        **loader_kwargs
+        num_workers=cfg.num_workers,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers
     )
-    
+
     test_loader = DataLoader(
         test_dataset,
+        batch_size=cfg.batch_size,
         shuffle=False,
-        **loader_kwargs
+        num_workers=cfg.num_workers,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers
     )
     
     return train_loader, val_loader, test_loader

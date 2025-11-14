@@ -419,20 +419,20 @@ def compute_statistics_text(
     if aod_past.dim() == 2:
         # Take first sample if batch
         aod_past = aod_past[0]
-    
-    aod_past = aod_past.detach().cpu().numpy()
+
+    aod_past_np = aod_past.detach().cpu().numpy()
     
     # Basic statistics
-    mean_val = float(np.mean(aod_past))
-    std_val = float(np.std(aod_past))
-    
+    mean_val = float(np.mean(aod_past_np))
+    std_val = float(np.std(aod_past_np))
+
     # Trend (difference between last and first)
-    trend = float(aod_past[-1] - aod_past[0])
+    trend = float(aod_past_np[-1] - aod_past_np[0])
     trend_str = "upward" if trend > 0 else "downward"
-    
+
     # Velocity (mean absolute difference)
-    if len(aod_past) > 1:
-        diff = np.diff(aod_past)
+    if len(aod_past_np) > 1:
+        diff = np.diff(aod_past_np)
         velocity = float(np.mean(np.abs(diff)))
     else:
         velocity = 0.0
@@ -443,10 +443,10 @@ def compute_statistics_text(
         f"velocity={velocity:.4f} rad/step"
     )
     
-    if include_autocorr and len(aod_past) > 5:
+    if include_autocorr and len(aod_past_np) > 5:
         # Simple autocorrelation at lag 1
         try:
-            autocorr_1 = float(np.corrcoef(aod_past[:-1], aod_past[1:])[0, 1])
+            autocorr_1 = float(np.corrcoef(aod_past_np[:-1], aod_past_np[1:])[0, 1])
             stats_text += f", autocorr(lag1)={autocorr_1:.3f}"
         except:
             pass

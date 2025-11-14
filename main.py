@@ -5,6 +5,7 @@ import torch
 import argparse
 import json
 import os
+from typing import Optional
 
 from config import Config, get_default_config, get_lightweight_config
 from data import create_dataloaders, BeamSeqDataset
@@ -13,6 +14,11 @@ from training import Trainer
 from evaluation import Evaluator, create_all_visualizations
 from utils import set_seed
 
+from beam_improvements import (
+    apply_improvements,
+    compute_enhanced_statistics_text,
+    validate_improvements
+)
 
 def parse_args():
     """Parse command line arguments"""
@@ -28,6 +34,15 @@ def parse_args():
                         choices=["default", "lightweight", "tiny", 
                                  "long_trajectory", "extreme_trajectory"],
                         help="Configuration preset (use long_trajectory for increased travel distance)")
+    
+    parser.add_argument("--use_improvements", action="store_true", default=True,
+                        help="Apply all improvements (default: True)")
+    parser.add_argument("--use_position_constraints", action="store_true",
+                        help="Enable position-based constraints")
+    parser.add_argument("--use_enhanced_stats", action="store_true", default=True,
+                        help="Use enhanced statistics with FFT")
+    parser.add_argument("--use_streaming", action="store_true",
+                        help="Use memory-efficient streaming dataset")
     
     # Model
     parser.add_argument("--use_gpt2", action="store_true",
@@ -112,6 +127,11 @@ def get_config(args):
     cfg.device = args.device
     cfg.save_visualizations = not args.no_viz
     
+    cfg.use_improvements = args.use_improvements
+    cfg.use_position_constraints = args.use_position_constraints
+    cfg.use_enhanced_stats = args.use_enhanced_stats
+    cfg.use_streaming_dataset = args.use_streaming
+    
     return cfg
 
 
@@ -139,16 +159,39 @@ def train_model(cfg: Config, device: torch.device):
     print(f"Model created successfully")
     print(f"Using GPT-2: {cfg.use_gpt2}")
     
+    if cfg.use_improvements:
+        print("\n🔧 Applying improvements...")
+        cfg, model, (train_loader, val_loader, test_loader) = apply_improvements(
+            cfg, model, (train_loader, val_loader, test_loader)
+        )
+        print("✅ Improvements applied!")
+    
     # Create trainer
     trainer = Trainer(model, train_loader, val_loader, cfg, device)
-    
+
+    if cfg.use_enhanced_stats:
+        original_compute_stats = trainer.compute_statistics_text if hasattr(trainer, 'compute_statistics_text') else None
+        
+        def enhanced_stats_wrapper(aod_past: torch.Tensor, include_autocorr: bool = True) -> str:
+            return compute_enhanced_statistics_text(aod_past, include_autocorr=include_autocorr)
+        
+        # Monkey-patch the enhanced statistics
+        import utils
+        utils.compute_statistics_text = enhanced_stats_wrapper
+        print("✅ Enhanced statistics activated")
+
     # Train
     best_metrics = trainer.train()
     
     # Save config
     config_path = os.path.join(cfg.checkpoint_dir, "config.json")
     with open(config_path, 'w') as f:
-        json.dump(cfg.to_dict(), f, indent=2)
+        config_dict = cfg.to_dict()
+        # Add improvement flags
+        config_dict['improvements_applied'] = cfg.use_improvements
+        config_dict['position_constraints'] = cfg.use_position_constraints
+        config_dict['enhanced_stats'] = cfg.use_enhanced_stats
+        json.dump(config_dict, f, indent=2)
     print(f"\nSaved config to {config_path}")
     
     return model, trainer.history
@@ -157,8 +200,8 @@ def train_model(cfg: Config, device: torch.device):
 def evaluate_model(
     cfg: Config,
     device: torch.device,
-    model: torch.nn.Module = None,
-    checkpoint_path: str = None
+    model: Optional[torch.nn.Module] = None,
+    checkpoint_path: Optional[str] = None
 ):
     """Evaluate model
     
@@ -196,18 +239,30 @@ def evaluate_model(
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
         model = BeamPredictorLLM(cfg)
+        
+        if cfg.use_improvements:
+            cfg, model, _ = apply_improvements(cfg, model)    
+        
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        if model is not None:
+            model.load_state_dict(checkpoint["model_state_dict"])
         print(f"Loaded checkpoint from {checkpoint_path}")
         print(f"  Epoch: {checkpoint['epoch']}")
         print(f"  Val Loss: {checkpoint['val_loss']:.4f}")
-    
-    # Create evaluator
+
+    # Create evaluator (ensure model is not None)
+    if model is None:
+        raise ValueError("Model must be provided for evaluation")
     evaluator = Evaluator(model, test_loader, cfg, device)
     
     # Evaluate
     test_metrics = evaluator.evaluate()
     
+    if cfg.use_improvements:
+        print("\n📋 Validating improvements...")
+        validation_results = validate_improvements(cfg, model, test_loader)
+        test_metrics['improvement_validation'] = validation_results
+
     return test_metrics, test_loader
 
 
@@ -235,6 +290,13 @@ def main():
             print(f"  {key:30s}: {value}")
     print("-" * 70)
     
+    if cfg.use_improvements:
+        print("\n🔧 Improvements Enabled:")
+        print(f"  - Position Constraints: {cfg.use_position_constraints}")
+        print(f"  - Enhanced Statistics: {cfg.use_enhanced_stats}")
+        print(f"  - Streaming Dataset: {cfg.use_streaming_dataset}")
+        print("-" * 70)
+
     # Execute based on mode
     model = None
     history = None
@@ -251,6 +313,10 @@ def main():
             model=model,
             checkpoint_path=args.checkpoint
         )
+        if cfg.use_improvements and 'improvement_validation' in test_metrics:
+            print("\n📊 Improvement Metrics:")
+            for key, value in test_metrics['improvement_validation'].items():
+                print(f"  {key}: {value}")
     
     # Visualizations - ALWAYS create if not explicitly disabled
     if cfg.save_visualizations:

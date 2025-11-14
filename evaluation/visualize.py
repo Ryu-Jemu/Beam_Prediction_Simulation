@@ -80,19 +80,27 @@ def plot_sample_prediction(
     
     # Convert to numpy
     if isinstance(predictions, torch.Tensor):
-        predictions = predictions.detach().cpu().numpy()
+        predictions_np = predictions.detach().cpu().numpy()
+    else:
+        predictions_np = predictions
     if isinstance(Y, torch.Tensor):
-        Y = Y.detach().cpu().numpy()
+        Y_np = Y.detach().cpu().numpy()
+    else:
+        Y_np = Y
     if isinstance(a_past, torch.Tensor):
-        a_past = a_past.detach().cpu().numpy()
+        a_past_np = a_past.detach().cpu().numpy()
+    else:
+        a_past_np = a_past
     if isinstance(a_fut, torch.Tensor):
-        a_fut = a_fut.detach().cpu().numpy()
+        a_fut_np = a_fut.detach().cpu().numpy()
+    else:
+        a_fut_np = a_fut
     if isinstance(traj, torch.Tensor):
         traj = traj.detach().cpu().numpy()
     
     # Convert to angles
-    pred_angles = sincos_to_angle(predictions)
-    target_angles = sincos_to_angle(Y)
+    pred_angles = sincos_to_angle(predictions_np)
+    target_angles = sincos_to_angle(Y_np)
     
     # Compute errors
     errors = np.abs(pred_angles - target_angles)
@@ -310,7 +318,7 @@ def create_all_visualizations(
     model.eval()
     dataset = test_loader.dataset
     
-    for i in range(min(cfg.viz_samples, len(dataset))):
+    for i in range(min(cfg.viz_samples, getattr(dataset, '__len__', lambda: cfg.viz_samples)())):
         sample = dataset[i]
         X, Y, a_past, *rest = sample
         

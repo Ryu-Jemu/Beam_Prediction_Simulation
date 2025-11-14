@@ -5,7 +5,10 @@ Improved with learnable text prototypes and better prompting
 import torch
 import torch.nn as nn
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from transformers import AutoTokenizer, AutoModel
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ def build_pap_prompts(U: int, H: int) -> List[str]:
 def load_gpt2_model(
     model_name: str = "gpt2",
     freeze: bool = True
-) -> Tuple[Optional[object], Optional[object]]:
+) -> Tuple[Optional[nn.Module], Optional[nn.Module]]:
     """Load GPT-2 tokenizer and model
     
     Args:
@@ -52,14 +55,14 @@ def load_gpt2_model(
     """
     try:
         from transformers import AutoTokenizer, AutoModel
-        
+
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModel.from_pretrained(model_name)
         
         if freeze:
-            for param in model.parameters():
+            for param in model.parameters():  # type: ignore[attr-defined]
                 param.requires_grad = False
-            model.eval()
+            model.eval()  # type: ignore[attr-defined]
         
         logger.info(f"Loaded GPT-2 model: {model_name}, freeze={freeze}")
         return tokenizer, model
@@ -90,7 +93,7 @@ def embed_text_with_gpt2(
     model.eval()
     
     with torch.no_grad():
-        embeddings = []
+        embeddings: List[torch.Tensor] = []
         for text in texts:
             # Tokenize
             inputs = tokenizer(
@@ -109,9 +112,9 @@ def embed_text_with_gpt2(
             embed = hidden.mean(dim=1)  # [1, D]
             embeddings.append(embed)
         
-        embeddings = torch.cat(embeddings, dim=0)  # [len(texts), D]
-    
-    return embeddings
+        embeddings_tensor = torch.cat(embeddings, dim=0)  # [len(texts), D]
+
+    return embeddings_tensor
 
 
 class LearnableTextPrototypes(nn.Module):
@@ -320,9 +323,13 @@ class PromptAsPrefix(nn.Module):
 
 class GPT2Backbone(nn.Module):
     """GPT-2 backbone for processing reprogrammed embeddings
-    
+
     This is a frozen GPT-2 model that processes the prompt + patch embeddings.
     """
+
+    tokenizer: nn.Module
+    gpt2: nn.Module
+    hidden_dim: int
     
     def __init__(
         self,
@@ -340,13 +347,13 @@ class GPT2Backbone(nn.Module):
         
         # Load GPT-2
         tokenizer, model = load_gpt2_model(model_name, freeze)
-        
-        if model is None:
+
+        if model is None or tokenizer is None:
             raise RuntimeError(f"Failed to load GPT-2 model: {model_name}")
-        
+
         self.tokenizer = tokenizer
         self.gpt2 = model
-        self.hidden_dim = model.config.n_embd
+        self.hidden_dim = int(model.config.n_embd)  # type: ignore[attr-defined, assignment, union-attr, arg-type]
     
     def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Process embeddings through GPT-2
@@ -359,16 +366,16 @@ class GPT2Backbone(nn.Module):
         """
         # Move model to same device as input
         device = embeddings.device
-        self.gpt2.to(device)
-        
+        self.gpt2.to(device)  # type: ignore[attr-defined]
+
         if self.freeze:
-            self.gpt2.eval()
+            self.gpt2.eval()  # type: ignore[attr-defined]
             with torch.no_grad():
-                outputs = self.gpt2(inputs_embeds=embeddings)
-                hidden_states = outputs.last_hidden_state
+                outputs = self.gpt2(inputs_embeds=embeddings)  # type: ignore[call-arg]
+                hidden_states = outputs.last_hidden_state  # type: ignore[attr-defined]
         else:
-            outputs = self.gpt2(inputs_embeds=embeddings)
-            hidden_states = outputs.last_hidden_state
+            outputs = self.gpt2(inputs_embeds=embeddings)  # type: ignore[call-arg]
+            hidden_states = outputs.last_hidden_state  # type: ignore[attr-defined]
         
         return hidden_states
     

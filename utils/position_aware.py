@@ -370,7 +370,7 @@ class PositionAwareBeamPredictor:
     def get_feasible_beams(
         self,
         current_pos: np.ndarray,
-        horizon: int = None
+        horizon: Optional[int] = None
     ) -> np.ndarray:
         """현재 위치에서 가능한 빔 목록
         

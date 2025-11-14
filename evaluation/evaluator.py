@@ -178,7 +178,7 @@ class Evaluator:
         print(f"\nAutoregressive evaluation on {num_samples} samples...")
         
         dataset = self.test_loader.dataset
-        num_samples = min(num_samples, len(dataset))
+        num_samples = min(num_samples, getattr(dataset, '__len__', lambda: num_samples)())
         
         mae_meter = AverageMeter()
         hit10_meter = AverageMeter()

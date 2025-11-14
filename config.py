@@ -13,9 +13,9 @@ class Config:
     
     # Scenario
     U: int = 20
-    H: int = 10
+    H: int = 5
     area_size_m: float = 200.0
-    delta_t_s: float = 5
+    delta_t_s: float = 2
     
     # Mobility
     speed_min_mps: float = 5.0
@@ -57,9 +57,9 @@ class Config:
     ctrv_weight: float = 0.3
     
     # Training
-    n_train: int = 10000
+    n_train: int = 20000
     n_val: int = 2000
-    n_test: int = 2000
+    n_test: int = 4000
     batch_size: int = 16
     
     # Optimization
@@ -104,6 +104,11 @@ class Config:
     save_visualizations: bool = True
     viz_samples: int = 5  # Number of samples to visualize
     viz_dir: str = "./visualizations"  # Visualization directory
+
+    # Improvements
+    use_improvements: bool = False
+    use_position_constraints: bool = False
+    use_enhanced_stats: bool = False
     
     @property
     def feature_dim(self) -> int:
