@@ -14,7 +14,7 @@ class Config:
     # Scenario
     U: int = 20
     H: int = 5
-    area_size_m: float = 200.0
+    area_size_m: float = 100.0
     delta_t_s: float = 2
     
     # Mobility
@@ -58,8 +58,8 @@ class Config:
     
     # Training
     n_train: int = 20000
-    n_val: int = 2000
-    n_test: int = 4000
+    n_val: int = 4000
+    n_test: int = 2000
     batch_size: int = 16
     
     # Optimization

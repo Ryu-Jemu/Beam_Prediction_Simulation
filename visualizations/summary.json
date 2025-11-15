@@ -1,0 +1,8 @@
+{
+  "best_epoch": 10,
+  "best_val_loss": 0.06888200632110238,
+  "val_mae_deg_at_best": 32.977027503967285,
+  "val_hit@5_at_best": 0.13095000021532177,
+  "val_hit@10_at_best": 0.2589499997794628,
+  "val_nmse_at_best": 0.0790947682596743
+}

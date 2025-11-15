@@ -9,11 +9,89 @@ from torch.utils.data import DataLoader
 from typing import Dict, Tuple, Optional
 
 from config import Config
-from .mobility import MarkovMobility, compute_turning_rate, ctrv_rollout
-from .channel import (
-    dft_codebook, simulate_sv_channel, optimal_beam_index,
-    aod_from_positions
-)
+# NOTE: use absolute imports so that this module can be imported from a
+# package (e.g. via `from data import BeamSeqDataset`) without requiring
+# it to live inside a package itself.  Relative imports (e.g. `.mobility`)
+# would fail when `dataset.py` resides at the project root.  Here we
+# import the necessary classes and functions from the top-level modules.
+"""
+Dataset module for beam prediction
+
+This module imports several helper classes and functions from the
+`mobility` and `channel` modules.  When this file is imported as part
+of a package (e.g. `data.dataset`), Python may not automatically find
+those top-level modules on the search path, leading to
+`ModuleNotFoundError`.  To make the imports robust, we first try the
+standard imports and, if they fail, dynamically load the modules
+relative to the current file using `importlib`.
+"""
+
+
+# Attempt to import mobility.  Try standard import first.  If that
+# fails, try a relative import (in case this module is part of a
+# package).  If that also fails, attempt to dynamically load the
+# module from common fallback locations.
+try:
+    from mobility import MarkovMobility, compute_turning_rate, ctrv_rollout  # type: ignore
+except ModuleNotFoundError:
+    try:
+        # Attempt relative import when dataset.py is inside a package
+        from .mobility import MarkovMobility, compute_turning_rate, ctrv_rollout  # type: ignore
+    except Exception:
+        import importlib.util as _importlib_util
+        import os as _os
+        import sys as _sys
+
+        _module_dir = _os.path.dirname(__file__)
+        # List potential paths where mobility.py might reside
+        _candidate_paths = [
+            _os.path.join(_module_dir, 'mobility.py'),
+            _os.path.join(_os.path.abspath(_os.path.join(_module_dir, _os.pardir)), 'mobility.py'),
+        ]
+        for _mobility_path in _candidate_paths:
+            if _os.path.exists(_mobility_path):
+                _spec = _importlib_util.spec_from_file_location('mobility', _mobility_path)
+                if _spec and _spec.loader:
+                    _mobility_module = _importlib_util.module_from_spec(_spec)
+                    _sys.modules['mobility'] = _mobility_module
+                    _spec.loader.exec_module(_mobility_module)  # type: ignore[attr-defined]
+                    MarkovMobility = _mobility_module.MarkovMobility  # type: ignore[attr-defined]
+                    compute_turning_rate = _mobility_module.compute_turning_rate  # type: ignore[attr-defined]
+                    ctrv_rollout = _mobility_module.ctrv_rollout  # type: ignore[attr-defined]
+                    break
+        else:
+            raise ImportError("Could not locate mobility module in known locations")
+
+# Attempt to import channel.  Similar logic as for mobility.
+try:
+    from channel import dft_codebook, simulate_sv_channel, optimal_beam_index, aod_from_positions  # type: ignore
+except ModuleNotFoundError:
+    try:
+        from .channel import dft_codebook, simulate_sv_channel, optimal_beam_index, aod_from_positions  # type: ignore
+    except Exception:
+        import importlib.util as _importlib_util
+        import os as _os
+        import sys as _sys
+
+        _module_dir = _os.path.dirname(__file__)
+        _candidate_paths = [
+            _os.path.join(_module_dir, 'channel.py'),
+            _os.path.join(_os.path.abspath(_os.path.join(_module_dir, _os.pardir)), 'channel.py'),
+        ]
+        for _channel_path in _candidate_paths:
+            if _os.path.exists(_channel_path):
+                _spec2 = _importlib_util.spec_from_file_location('channel', _channel_path)
+                if _spec2 and _spec2.loader:
+                    _channel_module = _importlib_util.module_from_spec(_spec2)
+                    _sys.modules['channel'] = _channel_module
+                    _spec2.loader.exec_module(_channel_module)  # type: ignore[attr-defined]
+                    dft_codebook = _channel_module.dft_codebook  # type: ignore[attr-defined]
+                    simulate_sv_channel = _channel_module.simulate_sv_channel  # type: ignore[attr-defined]
+                    optimal_beam_index = _channel_module.optimal_beam_index  # type: ignore[attr-defined]
+                    aod_from_positions = _channel_module.aod_from_positions  # type: ignore[attr-defined]
+                    break
+        else:
+            raise ImportError("Could not locate channel module in known locations")
 
 
 class BeamSeqDataset(torch.utils.data.Dataset):
@@ -83,9 +161,9 @@ class BeamSeqDataset(torch.utils.data.Dataset):
     def _generate_sample(self, idx: int) -> Dict:
         """Generate a single sample"""
         cfg = self.cfg
-        
         # 1. Generate mobility trajectory
-        traj_data = self._generate_trajectory()
+        # Pass the sample index to ensure unique random seeds
+        traj_data = self._generate_trajectory(idx)
         xs = traj_data["xs"]  # [T]
         ys = traj_data["ys"]  # [T]
         vs = traj_data["vs"]  # [T]
@@ -127,10 +205,32 @@ class BeamSeqDataset(torch.utils.data.Dataset):
             "a_baseline": a_baseline
         }
     
-    def _generate_trajectory(self) -> Dict:
-        """Generate mobility trajectory using MarkovMobility"""
+    def _generate_trajectory(self, sample_idx: int) -> Dict:
+        """Generate mobility trajectory using MarkovMobility
+
+        To ensure that each sample produces a distinct trajectory even when
+        the global PRNG state is reset (for example by external calls to
+        ``np.random.seed``), we derive the RNG seed from the dataset seed
+        and the sample index.  This avoids accidental reuse of the same
+        random seed across multiple samples, which would otherwise lead
+        to identical trajectories.  Using ``np.random.default_rng`` with
+        an explicit seed ensures reproducibility without relying on the
+        process-wide RNG state.
+
+        Args:
+            sample_idx: the index of the sample being generated
+
+        Returns:
+            A dictionary containing position, velocity and heading arrays.
+        """
         cfg = self.cfg
-        
+
+        # Derive a deterministic seed from the dataset's base seed and the
+        # sample index.  A large prime is used to decorrelate neighbouring
+        # indices and avoid simple patterns.  We take the modulus to ensure
+        # the seed fits in the 32‑bit range required by default_rng.
+        derived_seed = (self.seed + (sample_idx * 2654435761)) % (2**31 - 1)
+
         try:
             # Create mobility model
             mm = MarkovMobility(
@@ -142,62 +242,77 @@ class BeamSeqDataset(torch.utils.data.Dataset):
                 speed_mode=cfg.speed_mode,
                 reflect_at_boundary=True
             )
-            
-            # Generate trajectory
-            seed = int(self.rng.integers(0, 2**31 - 1))
-            xs, ys, vs, hs = mm.simulate(self.T, seed=seed)
-            
+
+            # Generate trajectory with derived seed
+            xs, ys, vs, hs = mm.simulate(self.T, seed=derived_seed)
             return {"xs": xs, "ys": ys, "vs": vs, "hs": hs}
-        
+
         except Exception as e:
+            # If MarkovMobility fails (e.g. missing module), fall back
             print(f"Warning: mobility generation failed: {e}")
-            # Fallback: simple straight line
-            return self._generate_trajectory_fallback()
+            return self._generate_trajectory_fallback(sample_idx)
     
-    def _generate_trajectory_fallback(self) -> Dict:
-        """Fallback trajectory generation"""
+    def _generate_trajectory_fallback(self, sample_idx: int) -> Dict:
+        """Fallback trajectory generation
+
+        When the standard MarkovMobility simulator cannot be used (for example
+        due to missing dependencies), this fallback generates a simple
+        random walk with reflection at the boundaries.  To maintain
+        reproducibility and uniqueness across samples, the RNG is seeded
+        based on the dataset seed and the sample index.
+
+        Args:
+            sample_idx: the index of the sample being generated
+
+        Returns:
+            A dictionary containing position, velocity and heading arrays.
+        """
         cfg = self.cfg
         L = cfg.area_size_m
         dt = cfg.delta_t_s
-        
+
+        # Derive deterministic seed for this sample
+        derived_seed = (self.seed + (sample_idx * 2654435761)) % (2**31 - 1)
+        rng = np.random.default_rng(derived_seed)
+
         # Random initial state
-        x = self.rng.uniform(0.1 * L, 0.9 * L)
-        y = self.rng.uniform(0.1 * L, 0.9 * L)
-        heading = self.rng.uniform(-math.pi, math.pi)
-        v = self.rng.uniform(cfg.speed_min_mps, cfg.speed_max_mps)
-        
+        x = rng.uniform(0.1 * L, 0.9 * L)
+        y = rng.uniform(0.1 * L, 0.9 * L)
+        heading = rng.uniform(-math.pi, math.pi)
+        v = rng.uniform(cfg.speed_min_mps, cfg.speed_max_mps)
+
         xs = np.zeros(self.T, dtype=np.float32)
         ys = np.zeros(self.T, dtype=np.float32)
         vs = np.zeros(self.T, dtype=np.float32)
         hs = np.zeros(self.T, dtype=np.float32)
-        
+
         turn_rad = math.radians(cfg.heading_turn_deg)
-        
+
         for t in range(self.T):
             xs[t], ys[t], vs[t], hs[t] = x, y, v, heading
-            
+
             # Update position
             x += v * dt * math.cos(heading)
             y += v * dt * math.sin(heading)
-            
+
             # Reflect at boundaries
             if x < 0 or x > L:
                 heading = math.pi - heading
-                x = max(0, min(L, 2*L - x if x > L else -x))
+                x = max(0, min(L, 2 * L - x if x > L else -x))
             if y < 0 or y > L:
                 heading = -heading
-                y = max(0, min(L, 2*L - y if y > L else -y))
-            
+                y = max(0, min(L, 2 * L - y if y > L else -y))
+
             # Random turn
-            heading += self.rng.uniform(-turn_rad, turn_rad)
-            heading = (heading + math.pi) % (2*math.pi) - math.pi
-            
+            heading += rng.uniform(-turn_rad, turn_rad)
+            heading = (heading + math.pi) % (2 * math.pi) - math.pi
+
             # Speed update if Markov
             if cfg.speed_mode == "markov":
-                r = self.rng.random()
+                r = rng.random()
                 dv = -1.0 if r < 0.25 else (1.0 if r >= 0.75 else 0.0)
                 v = np.clip(v + dv, cfg.speed_min_mps, cfg.speed_max_mps)
-        
+
         return {"xs": xs, "ys": ys, "vs": vs, "hs": hs}
     
     def _compute_aods(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
@@ -333,12 +448,19 @@ class BeamSeqDataset(torch.utils.data.Dataset):
         r_norm = r / (r_max + 1e-6)
         
         # Turning rate (angular velocity)
-        omega = np.zeros(U, dtype=np.float32)
-        if U >= 2:
-            for i in range(1, U):
-                dh = (h_past[i] - h_past[i-1] + math.pi) % (2*math.pi) - math.pi
-                omega[i] = dh / cfg.delta_t_s
-            omega[0] = omega[1]  # Copy for first step
+        # Use the utility function from `mobility` to compute angular
+        # velocities rather than duplicating the logic here.  This
+        # ensures consistency across the codebase and makes it easier
+        # to modify the turning rate computation in one place.
+        if U > 0:
+            omega = compute_turning_rate(h_past, cfg.delta_t_s)
+            # Replace the first element with the second to avoid using
+            # an uninformative zero value at t=0 (for short sequences
+            # compute_turning_rate returns 0 for the first element)
+            if len(omega) >= 2:
+                omega[0] = omega[1]
+        else:
+            omega = np.zeros(U, dtype=np.float32)
         omega_norm = np.clip(omega / math.pi, -1, 1)
         
         # Stack features

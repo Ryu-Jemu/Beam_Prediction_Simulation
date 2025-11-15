@@ -8,13 +8,92 @@ import math
 from typing import Optional
 
 from config import Config
-from .pap_gpt2 import (
-    PatchReprogramming,
-    PromptAsPrefix,
-    GPT2Backbone,
-    build_pap_prompts
-)
-from utils import RevIN
+# Use absolute imports to avoid issues when this module is imported as part
+# of a package.  The submodules live at the project root, so we import
+# directly from them rather than using relative imports (which only work
+# when this file is inside a package).
+# Robustly import the pap_gpt2 submodule and the RevIN class.  The
+# imports below first attempt to resolve relative modules when this file
+# is part of a package (e.g., `models`).  If that fails, they fall back
+# to absolute imports and finally to dynamically loading the modules
+# from candidate file paths.  This makes the code resilient to
+# different project structures.
+try:
+    # Try relative import when pap_gpt2.py is in the same package
+    from .pap_gpt2 import (
+        PatchReprogramming,
+        PromptAsPrefix,
+        GPT2Backbone,
+        build_pap_prompts,
+    )  # type: ignore
+except Exception:
+    try:
+        # Fall back to absolute import
+        from pap_gpt2 import (
+            PatchReprogramming,
+            PromptAsPrefix,
+            GPT2Backbone,
+            build_pap_prompts,
+        )  # type: ignore
+    except Exception:
+        # Dynamically load pap_gpt2 from common locations
+        import importlib.util as _importlib_util
+        import os as _os
+        import sys as _sys
+        _module_dir = _os.path.dirname(__file__)
+        _parent_dir = _os.path.abspath(_os.path.join(_module_dir, _os.pardir))
+        _candidate_paths = [
+            _os.path.join(_module_dir, 'pap_gpt2.py'),
+            _os.path.join(_parent_dir, 'pap_gpt2.py'),
+        ]
+        _found = False
+        for _pap_path in _candidate_paths:
+            if _os.path.exists(_pap_path):
+                _spec = _importlib_util.spec_from_file_location('pap_gpt2', _pap_path)
+                if _spec and _spec.loader:
+                    _pap_module = _importlib_util.module_from_spec(_spec)
+                    _sys.modules['pap_gpt2'] = _pap_module
+                    _spec.loader.exec_module(_pap_module)  # type: ignore[attr-defined]
+                    PatchReprogramming = _pap_module.PatchReprogramming  # type: ignore[attr-defined]
+                    PromptAsPrefix = _pap_module.PromptAsPrefix  # type: ignore[attr-defined]
+                    GPT2Backbone = _pap_module.GPT2Backbone  # type: ignore[attr-defined]
+                    build_pap_prompts = _pap_module.build_pap_prompts  # type: ignore[attr-defined]
+                    _found = True
+                    break
+        if not _found:
+            raise ImportError("Could not locate pap_gpt2 module in known locations")
+
+# Import RevIN similarly
+try:
+    from .utils import RevIN  # type: ignore
+except Exception:
+    try:
+        from utils import RevIN  # type: ignore
+    except Exception:
+        import importlib.util as _importlib_util2
+        import os as _os2
+        import sys as _sys2
+        _module_dir2 = _os2.path.dirname(__file__)
+        _parent_dir2 = _os2.path.abspath(_os2.path.join(_module_dir2, _os2.pardir))
+        _candidate_paths2 = [
+            _os2.path.join(_module_dir2, 'utils.py'),
+            _os2.path.join(_parent_dir2, 'utils.py'),
+            _os2.path.join(_parent_dir2, 'metrics.py'),
+        ]
+        _found2 = False
+        for _util_path in _candidate_paths2:
+            if _os2.path.exists(_util_path):
+                _specu = _importlib_util2.spec_from_file_location('utils', _util_path)
+                if _specu and _specu.loader:
+                    _util_module = _importlib_util2.module_from_spec(_specu)
+                    _sys2.modules['utils'] = _util_module
+                    _specu.loader.exec_module(_util_module)  # type: ignore[attr-defined]
+                    if hasattr(_util_module, 'RevIN'):
+                        RevIN = _util_module.RevIN  # type: ignore[attr-defined]
+                        _found2 = True
+                        break
+        if not _found2:
+            raise ImportError("Could not locate RevIN in utils module")
 
 
 class PatchEmbedding(nn.Module):
